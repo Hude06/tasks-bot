@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// The bot's way into Tasks: list, add, complete and trash to-dos.
+// The bot's way into Tasks: list, add, reschedule, complete and trash to-dos.
 //
 // Talks to the sync server's /api with the *bot key*, which can do exactly
-// these four things and nothing else. No dependencies — copy this one file
+// these things and nothing else. No dependencies — copy this one file
 // anywhere with Node 18+ and it works.
 //
 // Usage:
@@ -10,6 +10,9 @@
 //                      [--tag T] [--search TEXT]
 //   tasks-bot.mjs add "Buy milk @today #errands" ["another…"]
 //   tasks-bot.mjs add --from tasks.json      (or --from - for stdin, or inline JSON)
+//   tasks-bot.mjs move <id | exact title> @tomorrow          (reschedule)
+//   tasks-bot.mjs move <id | exact title> @2026-10-01 !2026-10-03
+//   tasks-bot.mjs move <id | exact title> --clear-deadline
 //   tasks-bot.mjs done <id | exact title>
 //   tasks-bot.mjs remove <id | exact title>          (moves it to Trash)
 //   tasks-bot.mjs meta                               (projects, areas, tags)
@@ -18,6 +21,7 @@
 //   --json             machine-readable output (on any command)
 //   --from SRC         (add) read tasks as JSON from a file, `-` (stdin) or a literal
 //   --create-missing   (add) create a project/area that doesn't exist yet
+//   --clear-deadline   (move) drop the deadline
 //   --dry-run          (add) show what would be added, write nothing
 //   --server URL       default $TASKS_SERVER or https://tasks.judemakes.dev
 //
@@ -225,6 +229,26 @@ const commands = {
     if (data.next) console.log(`Next occurrence: ${data.next.id}  ${data.next.title}   (${describe(data.next)})`);
   },
 
+  async move(opts, args) {
+    // The @when / !deadline tokens can sit anywhere; the rest is the id or title.
+    const body = {};
+    const rest = [];
+    for (const a of args) {
+      if (/^@\S/.test(a)) body.when = a.slice(1);
+      else if (/^!\S/.test(a)) body.deadline = a.slice(1);
+      else rest.push(a);
+    }
+    if (opts.clearDeadline) body.deadline = null;
+    if (!rest.length) throw new Error("move needs an id or an exact title");
+    if (body.when === undefined && body.deadline === undefined) {
+      throw new Error('move needs a new date: @today, @tomorrow, @evening, @later, @YYYY-MM-DD, and/or !deadline (or --clear-deadline)');
+    }
+    const id = await resolveTask(opts, rest.join(" "));
+    const data = await api(opts, "POST", `/api/tasks/${id}/move`, { body: { ...body, today: todayISO() } });
+    if (opts.json) return console.log(JSON.stringify(data, null, 2));
+    console.log(`Moved: ${data.task.id}  ${data.task.title}   (${describe(data.task)})`);
+  },
+
   async remove(opts, args) {
     if (!args.length) throw new Error("remove needs an id or an exact title");
     const id = await resolveTask(opts, args.join(" "));
@@ -254,6 +278,7 @@ function parseArgs(argv) {
       case "--tag": opts.tag = next(); break;
       case "--search": case "-s": opts.search = next(); break;
       case "--create-missing": opts.createMissing = true; break;
+      case "--clear-deadline": opts.clearDeadline = true; break;
       case "--dry-run": case "-n": opts.dryRun = true; break;
       case "--server": opts.server = next(); break;
       case "-h": case "--help": opts.help = true; break;
@@ -280,7 +305,7 @@ async function main() {
   const cmd = args.shift();
   if (opts.help || !cmd) return help();
   const run = commands[cmd];
-  if (!run) throw new Error(`unknown command "${cmd}" (list, add, done, remove, meta — or --help)`);
+  if (!run) throw new Error(`unknown command "${cmd}" (list, add, move, done, remove, meta — or --help)`);
   await run(opts, args);
 }
 
